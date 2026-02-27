@@ -1,0 +1,229 @@
+//usr/bin/env jbang "$0" "$@" ; exit $?
+//JAVA 17+
+
+import javax.swing.*;
+import java.awt.*;
+import java.io.*;
+import java.nio.file.*;
+import java.util.List;
+import java.awt.datatransfer.StringSelection;
+import java.awt.Toolkit;
+
+public class SshConfigLauncher {
+
+    static class HostEntry {
+        String name;
+        String hostName;
+        String user;
+        String identityFile;
+
+        public String toString() {
+            return name + (user != null ? " (" + user + ")" : "");
+        }
+    }
+
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(SshConfigLauncher::createUI);
+    }
+
+    private static void createUI() {
+        JFrame frame = new JFrame("SSH Config Launcher");
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.setSize(650, 520);
+
+        DefaultListModel<HostEntry> model = new DefaultListModel<>();
+        JList<HostEntry> hostList = new JList<>(model);
+        hostList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+
+        JTextArea details = new JTextArea();
+        details.setEditable(false);
+        details.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+
+        loadHosts(model);
+
+        hostList.addListSelectionListener(e -> {
+            HostEntry h = hostList.getSelectedValue();
+            if (h == null) return;
+
+            details.setText(
+                    "Host: " + h.name + "\n" +
+                    "HostName: " + nvl(h.hostName) + "\n" +
+                    "User: " + nvl(h.user) + "\n" +
+                    "IdentityFile: " + nvl(h.identityFile)
+            );
+        });
+
+        JButton cmdSsh = new JButton("cmd>ssh");
+        JButton psSsh = new JButton("ps>ssh");
+        JButton cmdSftp = new JButton("cmd>sftp");
+        JButton psSftp = new JButton("ps>sftp");
+
+        JTextField commandField = new JTextField();
+
+        JButton clipboardButton = new JButton("Clipboard");
+        JButton launchButton = new JButton("Launch");
+
+        cmdSsh.addActionListener(e -> populateCommand(hostList, commandField, "cmd", "ssh"));
+        psSsh.addActionListener(e -> populateCommand(hostList, commandField, "powershell", "ssh"));
+        cmdSftp.addActionListener(e -> populateCommand(hostList, commandField, "cmd", "sftp"));
+        psSftp.addActionListener(e -> populateCommand(hostList, commandField, "powershell", "sftp"));
+
+        clipboardButton.addActionListener(e -> copyCleanCommand(commandField.getText()));
+        launchButton.addActionListener(e -> launch(commandField.getText()));
+
+        JPanel buttonPanel = new JPanel(new GridLayout(2, 2, 8, 8));
+        buttonPanel.add(cmdSsh);
+        buttonPanel.add(psSsh);
+        buttonPanel.add(cmdSftp);
+        buttonPanel.add(psSftp);
+
+        JPanel commandPanel = new JPanel(new BorderLayout(8, 8));
+        commandPanel.add(commandField, BorderLayout.CENTER);
+
+        JPanel actionPanel = new JPanel(new GridLayout(1, 2, 8, 8));
+        actionPanel.add(clipboardButton);
+        actionPanel.add(launchButton);
+
+        commandPanel.add(actionPanel, BorderLayout.EAST);
+
+        JPanel southPanel = new JPanel(new BorderLayout(8, 8));
+        southPanel.add(buttonPanel, BorderLayout.CENTER);
+        southPanel.add(commandPanel, BorderLayout.SOUTH);
+
+        JSplitPane split = new JSplitPane(
+                JSplitPane.VERTICAL_SPLIT,
+                new JScrollPane(hostList),
+                new JScrollPane(details)
+        );
+        split.setResizeWeight(0.6);
+
+        frame.setLayout(new BorderLayout(8, 8));
+        frame.add(split, BorderLayout.CENTER);
+        frame.add(southPanel, BorderLayout.SOUTH);
+
+        frame.setLocationRelativeTo(null);
+        frame.setVisible(true);
+    }
+
+    private static void populateCommand(JList<HostEntry> list, JTextField field, String shell, String mode) {
+        HostEntry h = list.getSelectedValue();
+        if (h == null) {
+            JOptionPane.showMessageDialog(null, "Select a host first");
+            return;
+        }
+
+        StringBuilder remote = new StringBuilder();
+
+        if (h.user != null && !h.user.isBlank()) {
+            remote.append(h.user).append("@");
+        }
+
+        if (h.hostName != null && !h.hostName.isBlank()) {
+            remote.append(h.hostName);
+        } else {
+            remote.append(h.name);
+        }
+
+        StringBuilder sshCmd = new StringBuilder(mode);
+
+        if (h.identityFile != null && !h.identityFile.isBlank()) {
+            sshCmd.append(" -i \"").append(h.identityFile).append("\"");
+        }
+
+        sshCmd.append(" ").append(remote);
+
+        String fullCommand;
+        if (shell.equals("cmd")) {
+            fullCommand = "cmd /c start cmd /k " + sshCmd;
+        } else {
+            fullCommand = "cmd /c start powershell -NoExit -Command " + sshCmd;
+        }
+
+        field.setText(fullCommand);
+    }
+
+    private static void copyCleanCommand(String fullCommand) {
+        if (fullCommand == null || fullCommand.isBlank()) {
+            JOptionPane.showMessageDialog(null, "Nothing to copy");
+            return;
+        }
+
+        String cleaned = fullCommand
+                .replaceFirst("cmd /c start cmd /k ", "")
+                .replaceFirst("cmd /c start powershell -NoExit -Command ", "");
+
+        Toolkit.getDefaultToolkit()
+                .getSystemClipboard()
+                .setContents(new StringSelection(cleaned), null);
+    }
+
+    private static void launch(String command) {
+        if (command == null || command.isBlank()) {
+            JOptionPane.showMessageDialog(null, "No command to launch");
+            return;
+        }
+
+        try {
+            new ProcessBuilder(command.split(" ")).start();
+        } catch (IOException ex) {
+            JOptionPane.showMessageDialog(null,
+                    "Failed to launch session:\n" + ex.getMessage());
+        }
+    }
+
+    private static void loadHosts(DefaultListModel<HostEntry> model) {
+        try {
+            String userHome = System.getProperty("user.home");
+            Path configPath = Paths.get(userHome, ".ssh", "config");
+
+            if (!Files.exists(configPath)) {
+                JOptionPane.showMessageDialog(null,
+                        "SSH config not found:\n" + configPath);
+                return;
+            }
+
+            List<String> lines = Files.readAllLines(configPath);
+
+            HostEntry current = null;
+
+            for (String rawLine : lines) {
+                String line = rawLine.trim();
+
+                if (line.isEmpty() || line.startsWith("#")) continue;
+
+                if (line.toLowerCase().startsWith("host ")) {
+                    if (current != null) model.addElement(current);
+
+                    current = new HostEntry();
+                    current.name = value(line.substring(5));
+                }
+                else if (current != null) {
+                    String lower = line.toLowerCase();
+
+                    if (lower.startsWith("hostname "))
+                        current.hostName = value(line);
+
+                    if (lower.startsWith("user "))
+                        current.user = value(line);
+
+                    if (lower.startsWith("identityfile "))
+                        current.identityFile = value(line);
+                }
+            }
+
+            if (current != null) model.addElement(current);
+
+        } catch (Exception ex) {
+            JOptionPane.showMessageDialog(null,
+                    "Failed to read SSH config:\n" + ex.getMessage());
+        }
+    }
+
+    private static String value(String line) {
+        return line.substring(line.indexOf(" ") + 1).replace("\"", "").trim();
+    }
+
+    private static String nvl(String s) {
+        return s == null ? "" : s;
+    }
+}
