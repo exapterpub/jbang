@@ -4,6 +4,9 @@
     "j2p": {
       "script-ref": "org.jsonschema2pojo:jsonschema2pojo-cli:1.3.3",
       "java-agents": []
+    },"ssh-launch": {
+      "script-ref": "utils/SshConfigLauncher.java",
+      "java-agents": []
     }
   },
   "templates": {}
